@@ -155,6 +155,142 @@ impl Resize {
     }
 }
 
+pub use lightcraft_raster::resample::Filter as ResampleFilter;
+
+/// How a resized export is scaled. `Auto` renders straight at the output size (the pipeline's
+/// own prefilter, the fastest); a [`ResampleFilter`] renders the photo at its full (cropped) size
+/// and scales the finished picture with that kernel, so the choice of filter is what decides
+/// the look of the downscale or enlargement. Written as `"auto"` or a filter id (`"lanczos3"`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Resample {
+    #[default]
+    Auto,
+    Filter(ResampleFilter),
+}
+
+impl Resample {
+    /// `auto` or a [`ResampleFilter::parse`] id / alias.
+    pub fn parse(s: &str) -> Option<Self> {
+        if s.trim().eq_ignore_ascii_case("auto") { Some(Self::Auto) } else { ResampleFilter::parse(s).map(Self::Filter) }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Filter(f) => f.id(),
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Automatic",
+            Self::Filter(f) => f.label(),
+        }
+    }
+    /// `auto` then every filter, in picker order.
+    pub fn all() -> impl Iterator<Item = Self> {
+        std::iter::once(Self::Auto).chain(ResampleFilter::ALL.into_iter().map(Self::Filter))
+    }
+    /// The ids [`Resample::parse`] accepts by name (for error messages).
+    pub fn ids() -> Vec<&'static str> {
+        Self::all().map(Self::id).collect()
+    }
+}
+
+impl Serialize for Resample {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.id())
+    }
+}
+
+impl<'de> Deserialize<'de> for Resample {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("unknown resample filter `{s}` (one of {})", Self::ids().join("|"))))
+    }
+}
+
+/// Scale a finished render to `w × h` with `filter`: the 8-bit image and the high-bit-depth
+/// samples alike, in linear light (`linear`, decoding the 8-bit image with `space`'s curve) or on
+/// the display-encoded values. Results are held
+/// to the source's range, so a ringing kernel (Lanczos, Catmull-Rom) can't push a channel past
+/// black or past the brightest value the render had.
+pub fn resample_rendered(
+    r: lightcraft_pipeline::Rendered,
+    w: usize,
+    h: usize,
+    filter: ResampleFilter,
+    linear: bool,
+    space: OutputSpace,
+) -> lightcraft_pipeline::Rendered {
+    use lightcraft_raster::{Image, resample::resize};
+    let (w, h) = (w.max(1), h.max(1));
+    if (r.image.width, r.image.height) == (w, h) && r.deep.as_ref().is_none_or(|d| (d.width, d.height) == (w, h)) {
+        return r;
+    }
+    let lightcraft_pipeline::Rendered { image, histogram, deep } = r;
+    let deep = deep.map(|d| resample_deep(&d, w, h, filter, linear));
+    let image = match &deep {
+        // the 8-bit image of a deep render is that render reduced to 8 bits
+        Some(d) => d.to_rgba8(),
+        None => {
+            let trc = space.trc();
+            let lut: Vec<f32> = (0..256).map(|v| if linear { trc.decode(v as f32 / 255.0) } else { v as f32 / 255.0 }).collect();
+            let lin = |v: u8| lut.get(v as usize).copied().unwrap_or(0.0);
+            let src: Image<[f32; 4]> = Image {
+                width: image.width,
+                height: image.height,
+                data: image.data.iter().map(|p| [lin(p[0]), lin(p[1]), lin(p[2]), p[3] as f32 / 255.0]).collect(),
+            };
+            let out = resize(&src, w, h, filter);
+            let enc = |v: f32| {
+                let v = v.clamp(0.0, 1.0);
+                ((if linear { trc.encode(v) } else { v }) * 255.0 + 0.5).clamp(0.0, 255.0) as u8
+            };
+            Image {
+                width: w,
+                height: h,
+                data: out.data.iter().map(|p| [enc(p[0]), enc(p[1]), enc(p[2]), (p[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8]).collect(),
+            }
+        }
+    };
+    lightcraft_pipeline::Rendered { image, histogram, deep }
+}
+
+/// [`resample_rendered`] for the high-bit-depth samples: 16-bit display-encoded values are
+/// decoded with the space's curve first (when `linear`); float samples are linear already.
+fn resample_deep(d: &DeepImage, w: usize, h: usize, filter: ResampleFilter, linear: bool) -> DeepImage {
+    use lightcraft_raster::{Image, resample::resize};
+    let n = d.width.saturating_mul(d.height);
+    let trc = d.space.trc();
+    let samples = match &d.samples {
+        DeepSamples::U16(v) => {
+            let lut: Vec<f32> = (0..=u16::MAX as u32).map(|x| if linear { trc.decode(x as f32 / 65535.0) } else { x as f32 / 65535.0 }).collect();
+            let lin = |x: u16| lut.get(x as usize).copied().unwrap_or(0.0);
+            let src: Image<[f32; 3]> =
+                Image { width: d.width, height: d.height, data: v.as_chunks::<3>().0.iter().take(n).map(|c| c.map(lin)).collect() };
+            if src.data.len() < n {
+                return d.clone();
+            }
+            let out = resize(&src, w, h, filter);
+            let enc = |x: f32| {
+                let x = x.clamp(0.0, 1.0);
+                ((if linear { trc.encode(x) } else { x }) * 65535.0 + 0.5).clamp(0.0, 65535.0) as u16
+            };
+            DeepSamples::U16(out.data.iter().flat_map(|p| p.map(enc)).collect())
+        }
+        DeepSamples::F32(v) => {
+            let src: Image<[f32; 3]> = Image { width: d.width, height: d.height, data: v.as_chunks::<3>().0.iter().take(n).copied().collect() };
+            if src.data.len() < n {
+                return d.clone();
+            }
+            // HDR renders go past 1: hold the result to what the render reached, never below black
+            let top = v.iter().copied().filter(|x| x.is_finite()).fold(0.0f32, f32::max);
+            let out = resize(&src, w, h, filter);
+            DeepSamples::F32(out.data.iter().flat_map(|p| p.map(|x| if x.is_finite() { x.clamp(0.0, top) } else { 0.0 })).collect())
+        }
+    };
+    DeepImage { width: w, height: h, space: d.space, samples }
+}
+
 /// What happens when an output file already exists.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -676,6 +812,11 @@ pub struct ExportOptions {
     pub photos_album: String,
     /// The curve of an HDR AVIF: PQ (default) or HLG.
     pub hdr_transfer: HdrCurve,
+    /// How a resized export is scaled (see [`Resample`]).
+    pub resample: Resample,
+    /// With a [`Resample::Filter`]: filter in linear light (true, default: no darkened edges or
+    /// fine detail) or on the display-encoded values (false: what many editors do).
+    pub resample_linear: bool,
 }
 
 impl Default for ExportOptions {
@@ -707,6 +848,8 @@ impl Default for ExportOptions {
             add_to_photos: false,
             photos_album: String::new(),
             hdr_transfer: HdrCurve::Pq,
+            resample: Resample::Auto,
+            resample_linear: true,
         }
     }
 }
@@ -751,6 +894,8 @@ pub const OPTION_PARAMS: &[&str] = &[
     "addToPhotos",
     "photosAlbum",
     "hdrTransfer",
+    "resample",
+    "resampleLinear",
 ];
 
 /// Why an export can't add its files to Apple Photos on this platform (`None`: it can, when the
@@ -954,7 +1099,12 @@ impl ExportOptions {
                     }
                     serde_json::from_value::<Resize>(v.clone()).map_err(|e| bad(format!("`{k}`: {e}")))?;
                 }
-                "dontEnlarge" | "removeLocation" | "background" | "hdr" | "jxlLossless" | "jxlProgressive" => {
+                "resample" => {
+                    if Resample::parse(string(cmd, k, v)?).is_none() {
+                        return Err(bad(format!("`{k}` must be one of {}", Resample::ids().join("|"))));
+                    }
+                }
+                "dontEnlarge" | "removeLocation" | "background" | "hdr" | "jxlLossless" | "jxlProgressive" | "resampleLinear" => {
                     boolean(k, v)?;
                 }
                 "addToPhotos" => {
@@ -1128,6 +1278,8 @@ impl ExportOptions {
             add_to_photos: p.get("addToPhotos").and_then(Value::as_bool).unwrap_or(d.add_to_photos),
             photos_album: s("photosAlbum").map_or(d.photos_album, |a| a.trim().to_string()),
             hdr_transfer: s("hdrTransfer").and_then(HdrCurve::parse).unwrap_or(d.hdr_transfer),
+            resample: s("resample").and_then(Resample::parse).unwrap_or(d.resample),
+            resample_linear: p.get("resampleLinear").and_then(Value::as_bool).unwrap_or(d.resample_linear),
         }
     }
 
@@ -1661,6 +1813,8 @@ struct RenderWork {
     hdr_job: Option<crate::media::RenderJob>,
     meta: Option<Metadata>,
     opts: ExportOptions,
+    /// Scale the render to this size with this filter after it is made ([`Resample::Filter`]).
+    resample_to: Option<(usize, usize, ResampleFilter)>,
 }
 
 enum Work {
@@ -1726,13 +1880,23 @@ fn prepare_guarded(
         let label = p.file_name.clone();
         let meta = export_metadata(p, &session.catalog, o);
         let gain_map = o.hdr_output() && o.format == ExportFormat::Jpeg;
-        let job = session.export_job(id, w, h, o.effective_space(), o.effective_depth())?;
-        let weight = render_weight(full_px, long, job.level, w.saturating_mul(h));
+        let (rw, rh) = (nw.round().max(1.0) as usize, nh.round().max(1.0) as usize);
+        // a chosen filter: render at full size, then scale the finished picture with it
+        let resample_to = match o.resample {
+            Resample::Filter(f) if (w, h) != (rw, rh) => Some((w, h, f)),
+            _ => None,
+        };
+        let (jw, jh) = if resample_to.is_some() { (rw, rh) } else { (w, h) };
+        let job = session.export_job(id, jw, jh, o.effective_space(), o.effective_depth())?;
+        // the full-size render, the filter's float copies (in, one pass, out) and the output
+        let render_px = jw.saturating_mul(jh);
+        let filter_px = if resample_to.is_some() { render_px.saturating_add(w.saturating_mul(jh)).saturating_add(w.saturating_mul(h)) } else { 0 };
+        let weight = render_weight(full_px, long, job.level, render_px.max(w.saturating_mul(h))).saturating_add(filter_px.saturating_mul(16));
         if let Some(why) = too_big_for_memory((w, h), native_px, weight, crate::memory::total_ram()) {
             return Err(format!("{label}: {why}"));
         }
-        let hdr_job = if gain_map { Some(session.export_job(id, w, h, o.effective_space(), OutputDepth::F32Hdr)?) } else { None };
-        (Work::Render(Box::new(RenderWork { job, hdr_job, meta, opts: o.clone() })), weight)
+        let hdr_job = if gain_map { Some(session.export_job(id, jw, jh, o.effective_space(), OutputDepth::F32Hdr)?) } else { None };
+        (Work::Render(Box::new(RenderWork { job, hdr_job, meta, opts: o.clone(), resample_to })), weight)
     } else {
         let lightcraft_catalog::Source::File { path } = &p.source else {
             return Err(format!("{} is a generated demo photo: it has no original file to export", p.file_name));
@@ -1806,13 +1970,17 @@ impl PreparedExport {
         let file_name = self.file_name;
         match self.work {
             Work::Render(w) => {
-                let RenderWork { job, hdr_job, meta, opts } = *w;
+                let RenderWork { job, hdr_job, meta, opts, resample_to } = *w;
+                let scale = |r: lightcraft_pipeline::Rendered| match resample_to {
+                    Some((w, h, f)) => resample_rendered(r, w, h, f, opts.resample_linear, opts.effective_space()),
+                    None => r,
+                };
                 let result = job.run();
-                let r = result.rendered?;
+                let r = scale(result.rendered?);
                 let gpu_fallback = result.gpu_fallback;
                 let bytes = match hdr_job {
                     Some(hj) => {
-                        let hr = hj.run().rendered?;
+                        let hr = scale(hj.run().rendered?);
                         let hdr = hr.deep.ok_or("the HDR render has no float samples")?;
                         encode_gain_map_jpeg(&r.image, &hdr, &opts, meta.as_ref())?
                     }
@@ -2868,15 +3036,94 @@ mod tests {
             watermark: Some(Watermark { text: "© LC".into(), ..Default::default() }),
             color_space: OutputSpace::ProPhoto,
             bit_depth: Some(16),
+            resample: Resample::Filter(ResampleFilter::Lanczos3),
+            resample_linear: false,
             ..Default::default()
         };
         assert_eq!(ExportOptions::from_json(&o.to_json()), o);
+        assert_eq!(o.to_json()["resample"], "lanczos3");
         let full = ExportOptions::default();
         assert_eq!(ExportOptions::from_json(&full.to_json()), full);
         assert!(ExportOptions::has_size_param(&full.to_json()), "full size is explicit");
         let mut p = named("IMG.png");
         p.captured = Some("2026-09-30T10:00:00".into());
         assert_eq!(o.file_name_for(&p, 2), "20260930-IMG-043.tif");
+    }
+
+    #[test]
+    fn resample_param_parses_validates_and_defaults_to_auto() {
+        assert_eq!(ExportOptions::default().resample, Resample::Auto);
+        assert!(ExportOptions::default().resample_linear);
+        for r in Resample::all() {
+            let o = ExportOptions::from_params(&json!({"resample": r.id()})).unwrap();
+            assert_eq!(o.resample, r, "{}", r.id());
+            assert_eq!(serde_json::from_value::<Resample>(serde_json::to_value(r).unwrap()).unwrap(), r);
+        }
+        assert_eq!(ExportOptions::from_json(&json!({"resample": "Bicubic"})).resample, Resample::Filter(ResampleFilter::CatmullRom));
+        // strict for commands, lenient for stored prefs
+        let e = ExportOptions::from_params(&json!({"resample": "sinc"})).unwrap_err().to_string();
+        assert!(e.contains("`resample` must be one of auto|nearest|"), "{e}");
+        assert!(ExportOptions::from_params(&json!({"resample": 3})).is_err());
+        assert!(ExportOptions::from_params(&json!({"resampleLinear": "yes"})).is_err());
+        assert_eq!(ExportOptions::from_json(&json!({"resample": "sinc"})).resample, Resample::Auto);
+        assert!(serde_json::from_value::<Resample>(json!("sinc")).is_err());
+    }
+
+    #[test]
+    fn resample_rendered_scales_8bit_and_deep_renders() {
+        use lightcraft_pipeline::Rendered;
+        // a hard black/white edge: a ringing kernel must not push past black or white
+        let (w, h) = (64usize, 40usize);
+        let px = |x: usize| if x < w / 2 { 0u8 } else { 255u8 };
+        let image = lightcraft_raster::Image::from_fn(w, h, |x, _| [px(x), px(x), px(x), 255]);
+        let deep16 = DeepImage {
+            width: w,
+            height: h,
+            space: OutputSpace::DisplayP3,
+            samples: DeepSamples::U16((0..w * h).flat_map(|i| [if i % w < w / 2 { 0 } else { 65535 }; 3]).collect()),
+        };
+        let deepf = DeepImage {
+            width: w,
+            height: h,
+            space: OutputSpace::Rec2020,
+            samples: DeepSamples::F32((0..w * h).flat_map(|i| [if i % w < w / 2 { 0.0 } else { 4.0 }; 3]).collect()),
+        };
+        for f in ResampleFilter::ALL {
+            for (ow, oh) in [(16, 10), (150, 93), (1, 1)] {
+                for linear in [true, false] {
+                    let r = Rendered { image: image.clone(), histogram: lightcraft_raster::Histogram::of_srgb8(&image), deep: None };
+                    let out = resample_rendered(r, ow, oh, f, linear, OutputSpace::Srgb);
+                    assert_eq!((out.image.width, out.image.height, out.image.data.len()), (ow, oh, ow * oh), "{f:?}");
+                    assert!(out.image.data.iter().all(|p| p[3] == 255), "{f:?} keeps alpha");
+
+                    let r =
+                        Rendered { image: deep16.to_rgba8(), histogram: lightcraft_raster::Histogram::of_srgb8(&image), deep: Some(deep16.clone()) };
+                    let out = resample_rendered(r, ow, oh, f, linear, OutputSpace::DisplayP3);
+                    let d = out.deep.unwrap();
+                    assert_eq!((d.width, d.height, d.space), (ow, oh, OutputSpace::DisplayP3));
+                    let DeepSamples::U16(v) = &d.samples else { panic!() };
+                    assert_eq!(v.len(), ow * oh * 3);
+                    assert_eq!((out.image.width, out.image.height), (ow, oh), "8-bit follows deep");
+
+                    let r =
+                        Rendered { image: deepf.to_rgba8(), histogram: lightcraft_raster::Histogram::of_srgb8(&image), deep: Some(deepf.clone()) };
+                    let d = resample_rendered(r, ow, oh, f, linear, OutputSpace::Rec2020).deep.unwrap();
+                    let DeepSamples::F32(v) = &d.samples else { panic!() };
+                    assert_eq!(v.len(), ow * oh * 3);
+                    assert!(v.iter().all(|x| (0.0..=4.0).contains(x)), "{f:?}: HDR held to the render's range");
+                }
+            }
+        }
+        // linear light: averaging black and white gives linear 0.5 (sRGB ~188), not 128
+        let r = Rendered { image: image.clone(), histogram: lightcraft_raster::Histogram::of_srgb8(&image), deep: None };
+        let lin = resample_rendered(r, 1, 1, ResampleFilter::Box, true, OutputSpace::Srgb).image.data[0][0];
+        let r = Rendered { image: image.clone(), histogram: lightcraft_raster::Histogram::of_srgb8(&image), deep: None };
+        let gam = resample_rendered(r, 1, 1, ResampleFilter::Box, false, OutputSpace::Srgb).image.data[0][0];
+        assert!((186..=190).contains(&lin), "linear light mean: {lin}");
+        assert!((126..=129).contains(&gam), "display-encoded mean: {gam}");
+        // same size: untouched
+        let r = Rendered { image: image.clone(), histogram: lightcraft_raster::Histogram::of_srgb8(&image), deep: None };
+        assert_eq!(resample_rendered(r, w, h, ResampleFilter::Lanczos3, true, OutputSpace::Srgb).image, image);
     }
 
     #[test]
