@@ -2097,7 +2097,18 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
             return Some(r);
         }
         "file.exportLut" => {
-            let Some(photo) = app.session.active() else { return Some(Err("no photo selected".into())) };
+            // the photo chosen when the command started: the save dialog runs in the background
+            // and replays the command with these params, by which time another photo may be active
+            let photo = match p.get("id").and_then(Value::as_u64) {
+                Some(n) => lightcraft_catalog::PhotoId(n),
+                None => match app.session.active() {
+                    Some(id) => id,
+                    None => return Some(Err("no photo selected".into())),
+                },
+            };
+            let mut p = p.clone();
+            p["id"] = json!(photo.0);
+            let p = &p;
             let path = match p.get("path").and_then(Value::as_str) {
                 Some(x) => Some(x.to_string()),
                 None => {

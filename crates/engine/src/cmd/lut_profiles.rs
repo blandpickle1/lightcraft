@@ -141,10 +141,13 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
 fn export_lut(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "profile.exportLut";
     let path = str_param(p, "path").filter(|x| !x.trim().is_empty()).ok_or_else(|| bad(C, "missing path"))?;
-    let mut path = PathBuf::from(path);
-    if path.extension().is_none() {
-        path.set_extension("cube");
-    }
+    // always a .cube: `look` and `My.Look` become `look.cube` and `My.Look.cube`, and another
+    // extension is kept in the name rather than written over (`look.zip` → `look.zip.cube`), so
+    // addProfile never reads cube text back as a zip bundle or a folder
+    let path = match Path::new(path).extension() {
+        Some(x) if x.eq_ignore_ascii_case("cube") => PathBuf::from(path),
+        _ => PathBuf::from(format!("{path}.cube")),
+    };
     let size = match p.get("size").filter(|v| !v.is_null()) {
         None => crate::lut_export::DEFAULT_SIZE,
         Some(v) => v

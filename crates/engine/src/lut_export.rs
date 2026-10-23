@@ -229,6 +229,12 @@ mod command_tests {
         assert!(id.starts_with("lut:"), "{r}");
         assert!(lightcraft_pipeline::lut::get(&id).is_some());
         assert_eq!(r["profile"]["name"], "Warm Look");
+        // the file is always a .cube: other extensions stay in the name
+        for (asked, written) in [("look.zip", "look.zip.cube"), ("My.Look", "My.Look.cube"), ("Shout.CUBE", "Shout.CUBE")] {
+            let r = s.execute("profile.exportLut", &json!({"path": dir.join(asked).to_string_lossy(), "size": 2, "addProfile": true})).unwrap();
+            assert_eq!(r["path"], dir.join(written).to_string_lossy().as_ref(), "{asked}");
+            assert!(r["profile"]["id"].is_string(), "{asked}: added as a profile: {r}");
+        }
         // bad requests are errors, never panics
         for bad in [
             json!({}),
