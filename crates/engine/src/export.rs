@@ -1895,7 +1895,11 @@ fn prepare_guarded(
         } else {
             render_weight(full_px, long, job.level, render_px.max(out_px))
         };
-        if let Some(why) = too_big_for_memory((w, h), native_px, weight, crate::memory::total_ram()) {
+        let too_big = match resample_to {
+            Some((_, _, f)) => filtered_too_big_for_memory((w, h), native_px, f, weight, crate::memory::total_ram()),
+            None => too_big_for_memory((w, h), native_px, weight, crate::memory::total_ram()),
+        };
+        if let Some(why) = too_big {
             return Err(format!("{label}: {why}"));
         }
         let hdr_job = if gain_map { Some(session.export_job(id, jw, jh, o.effective_space(), OutputDepth::F32Hdr)?) } else { None };
@@ -1955,6 +1959,34 @@ fn too_big_for_memory(out: (usize, usize), native_px: usize, weight: usize, ram:
         gb(weight).ceil(),
         gb(ram)
     ))
+}
+
+/// [`too_big_for_memory`] for an export scaled by `filter`: it renders the photo at its full size
+/// first whatever the output size, so a smaller output is checked too (only Automatic renders
+/// straight at the output size), and the error says so.
+fn filtered_too_big_for_memory(out: (usize, usize), native_px: usize, filter: ResampleFilter, weight: usize, ram: Option<usize>) -> Option<String> {
+    let ram = ram?;
+    if weight <= ram {
+        return None;
+    }
+    let gb = |b: usize| b as f64 / (1u64 << 30) as f64;
+    let (need, have) = (gb(weight).ceil(), gb(ram));
+    let enlarges = out.0.saturating_mul(out.1) > native_px;
+    Some(if enlarges {
+        format!(
+            "exporting at {} × {} with {} resampling needs about {need:.0} GB of memory, more than this computer has ({have:.0} GB); choose a smaller size, or Resampling: Automatic",
+            out.0,
+            out.1,
+            filter.label()
+        )
+    } else {
+        format!(
+            "{} resampling renders the photo at its full size before scaling it to {} × {}, which needs about {need:.0} GB of memory, more than this computer has ({have:.0} GB); choose Resampling: Automatic, which renders straight at the smaller size",
+            filter.label(),
+            out.0,
+            out.1
+        )
+    })
 }
 
 /// Working memory of rendering a photo of `full_px` pixels (long edge `long`) from source level
@@ -3224,6 +3256,15 @@ mod tests {
         assert_eq!(too_big_for_memory((6000, 4000), 24_000_000, 20 * gb, Some(gb)), None, "full size is never refused");
         assert_eq!(too_big_for_memory((3000, 2000), 24_000_000, 20 * gb, Some(gb)), None, "nor a smaller export");
         assert_eq!(too_big_for_memory((27713, 18475), 24_000_000, 20 * gb, None), None, "unknown memory");
+        // a filtered export renders at full size first: a smaller output is checked too, and the
+        // error points at Automatic
+        let l3 = ResampleFilter::Lanczos3;
+        let why = filtered_too_big_for_memory((3000, 2000), 24_000_000, l3, 20 * gb, Some(gb)).unwrap();
+        assert!(why.contains("Lanczos 3 resampling renders the photo at its full size") && why.contains("Resampling: Automatic"), "{why}");
+        let why = filtered_too_big_for_memory((27713, 18475), 24_000_000, l3, 20 * gb, Some(16 * gb)).unwrap();
+        assert!(why.contains("27713 × 18475") && why.contains("or Resampling: Automatic"), "{why}");
+        assert_eq!(filtered_too_big_for_memory((3000, 2000), 24_000_000, l3, 20 * gb, Some(32 * gb)), None, "fits");
+        assert_eq!(filtered_too_big_for_memory((3000, 2000), 24_000_000, l3, 20 * gb, None), None, "unknown memory");
     }
 
     #[test]
