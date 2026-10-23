@@ -807,7 +807,9 @@ pub(crate) fn doc_inspect(b: &mut dyn Backend) -> Result<Value, String> {
 
 /// The `resample` property of the `export` tool: `auto` or one of the engine's filters.
 fn export_resample_schema() -> Value {
-    let ids = lightcraft_engine::export::Resample::ids();
+    // the aliases `Resample::parse` reads too, so clients that check against the schema pass them
+    let mut ids = lightcraft_engine::export::Resample::ids();
+    ids.extend(["bicubic", "lanczos", "linear", "area"]);
     json!({
         "type": "string",
         "enum": ids,

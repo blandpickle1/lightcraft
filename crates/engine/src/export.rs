@@ -1888,10 +1888,13 @@ fn prepare_guarded(
         };
         let (jw, jh) = if resample_to.is_some() { (rw, rh) } else { (w, h) };
         let job = session.export_job(id, jw, jh, o.effective_space(), o.effective_depth())?;
-        // the full-size render, the filter's float copies (in, one pass, out) and the output
         let render_px = jw.saturating_mul(jh);
-        let filter_px = if resample_to.is_some() { render_px.saturating_add(w.saturating_mul(jh)).saturating_add(w.saturating_mul(h)) } else { 0 };
-        let weight = render_weight(full_px, long, job.level, render_px.max(w.saturating_mul(h))).saturating_add(filter_px.saturating_mul(16));
+        let out_px = w.saturating_mul(h);
+        let weight = if resample_to.is_some() {
+            filtered_render_weight(full_px, long, job.level, (jw, jh), (w, h), gain_map)
+        } else {
+            render_weight(full_px, long, job.level, render_px.max(out_px))
+        };
         if let Some(why) = too_big_for_memory((w, h), native_px, weight, crate::memory::total_ram()) {
             return Err(format!("{label}: {why}"));
         }
@@ -1958,6 +1961,26 @@ fn too_big_for_memory(out: (usize, usize), native_px: usize, weight: usize, ram:
 /// `level` into `out_px` output pixels: the decoded source (linear RGB f32, 12 B/px) plus the
 /// pipeline's planes and the encoded output (~36 B per output pixel). Measured: a 24 MP export
 /// peaks at ~1.2 GB, one at 2048 px from the 2560 px preview at ~150 MB.
+/// [`render_weight`] of an export scaled by a [`ResampleFilter`] from a `render` (w, h) render
+/// to `out` (w, h): the full-size render, the filter's float copies (in, one pass, out) and the
+/// scaled result. A gain map JPEG then renders and scales its HDR rendition while the scaled SDR
+/// one is held, so that render and its filter copies come on top.
+fn filtered_render_weight(
+    full_px: usize,
+    long: usize,
+    level: crate::media::SourceLevel,
+    render: (usize, usize),
+    out: (usize, usize),
+    gain_map: bool,
+) -> usize {
+    let (render_px, out_px) = (render.0.saturating_mul(render.1), out.0.saturating_mul(out.1));
+    let native = render_weight(full_px, long, level, render_px);
+    let scaled = render_weight(full_px, long, level, out_px);
+    let filter = render_px.saturating_add(out.0.saturating_mul(render.1)).saturating_add(out_px).saturating_mul(16);
+    let hdr = if gain_map { native.saturating_add(filter) } else { 0 };
+    native.saturating_add(scaled).saturating_add(filter).saturating_add(hdr)
+}
+
 fn render_weight(full_px: usize, long: usize, level: crate::media::SourceLevel, out_px: usize) -> usize {
     let edge = level.max_edge().min(long.max(1));
     let scale = edge as f64 / long.max(1) as f64;
@@ -3908,6 +3931,21 @@ mod tests {
         let (r, written, _) = lanes_batch(&mut s, &ids, &o, 3, true, usize::MAX);
         assert!(r.is_err());
         assert_eq!(written.len(), 1, "only the photo before the failure");
+    }
+
+    #[test]
+    fn filtered_exports_weigh_both_renders_and_the_hdr_pass() {
+        use crate::media::SourceLevel;
+        let (full, long) = (6000 * 4000, 6000);
+        let plain = render_weight(full, long, SourceLevel::Full, 6000 * 4000);
+        let sdr = filtered_render_weight(full, long, SourceLevel::Full, (6000, 4000), (2048, 1365), false);
+        let hdr = filtered_render_weight(full, long, SourceLevel::Full, (6000, 4000), (2048, 1365), true);
+        assert!(sdr > plain, "the filter's copies and the scaled result come on top of the full-size render");
+        assert!(hdr > sdr + plain, "a gain map holds the scaled SDR result while its HDR rendition renders and scales");
+        // an enlargement weighs the bigger output too
+        let up = filtered_render_weight(full, long, SourceLevel::Full, (6000, 4000), (12000, 8000), false);
+        assert!(up > render_weight(full, long, SourceLevel::Full, 12000 * 8000));
+        assert!(filtered_render_weight(usize::MAX, usize::MAX, SourceLevel::Full, (usize::MAX, 2), (usize::MAX, 3), true) > 0, "no overflow");
     }
 
     #[test]
