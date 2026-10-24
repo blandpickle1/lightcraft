@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 use lightcraft_catalog::PhotoId;
 use lightcraft_engine::Session;
+use lightcraft_engine::display::VECTORSCOPE_SAMPLES;
 use lightcraft_engine::media::{QuickJob, QuickSource, RenderJob, RenderResult};
 use lightcraft_engine::pipeline::StageCache;
 use lightcraft_preview::JobPool;
@@ -66,8 +67,12 @@ pub enum Slot {
     HdrHistogram,
 }
 
-/// Pixels the loupe's vectorscope reads at most (evenly spread): plenty for a 128-cell grid.
-pub const VECTORSCOPE_SAMPLES: usize = 250_000;
+/// The vectorscope of an sRGB render (a display profile's renders bring theirs, measured before
+/// their colours became the display's device values).
+fn scope_of_srgb(r: &RenderResult) -> Option<Arc<lightcraft_raster::Vectorscope>> {
+    let img = &r.rendered.as_ref().ok()?.image;
+    (r.display.is_none()).then(|| Arc::new(lightcraft_raster::Vectorscope::of_srgb8(img, VECTORSCOPE_SAMPLES)))
+}
 
 pub struct Tex {
     pub key: u64,
@@ -441,6 +446,10 @@ impl Renderer {
     fn run_for(job: impl FnOnce() -> RenderResult, display: &Option<Arc<lightcraft_engine::display::Display>>) -> Finished {
         let mut r = job();
         if let Some(d) = display {
+            // the vectorscope reads the sRGB colours, before they become the display's
+            if r.vectorscope.is_none() {
+                r.vectorscope = scope_of_srgb(&r);
+            }
             lightcraft_engine::display::present(&mut r, d);
         }
         let color = r.rendered.as_ref().ok().map(|x| Arc::new(color_image(&x.image)));
@@ -864,6 +873,9 @@ impl Renderer {
             // (results from an offload, which doesn't know the display profile: converted here)
             if let Some(d) = &self.display {
                 let before = r.display;
+                if r.vectorscope.is_none() {
+                    r.vectorscope = scope_of_srgb(&r);
+                }
                 lightcraft_engine::display::present(&mut r, d);
                 if r.display != before {
                     color = None; // converted after the worker made its texture pixels
@@ -872,6 +884,9 @@ impl Renderer {
             if self.pending.get(&slot).is_some_and(|p| p.0 == r.key) {
                 self.pending.remove(&slot);
             }
+            // measured on the sRGB colours: brought by a display profile's render, else read off
+            // the (sRGB) image; a display-encoded image without one gets none rather than a wrong one
+            let scope = if slot == Slot::Main { r.vectorscope.take().or_else(|| scope_of_srgb(&r)) } else { None };
             let rendered = match r.rendered {
                 Ok(x) => {
                     self.failed.remove(&slot);
@@ -911,8 +926,7 @@ impl Renderer {
                 self.textures.remove(&Slot::ThumbQuick(id));
             }
             let img = &rendered.image;
-            // the loupe's vectorscope: sampled (a few ms), so it follows a drag
-            let vectorscope = (slot == Slot::Main).then(|| Arc::new(lightcraft_raster::Vectorscope::of_srgb8(img, VECTORSCOPE_SAMPLES)));
+            let vectorscope = scope;
             let color = color.unwrap_or_else(|| Arc::new(color_image(img)));
             let pixels = self.keep_pixels.then(|| color.clone());
             let name = format!("{slot:?}");
@@ -1848,8 +1862,8 @@ mod stage_budget_tests {
 
     const MB: usize = 1 << 20;
 
-    // Given a zoomed view showing a window, the app idling does not free the GPU copy of the
-    // original the next window is cut from; once the windows are gone the idle trim runs again
+    /// Given a zoomed view showing a window, the app idling does not free the GPU copy of the
+    /// original the next window is cut from; once the windows are gone the idle trim runs again
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_zoomed_view_is_not_trimmed_while_idle() {
@@ -1956,7 +1970,7 @@ mod stage_budget_tests {
 mod color_image_tests {
     use super::*;
 
-    // The texture a render becomes is what egui would make of its bytes, whatever the alpha
+    /// The texture a render becomes is what egui would make of its bytes, whatever the alpha
     #[test]
     fn the_fast_conversion_equals_eguis() {
         let img = lightcraft_raster::Rgba8::from_fn(37, 29, |x, y| {
@@ -1974,8 +1988,34 @@ mod color_image_tests {
         assert_eq!(got.pixels, want.pixels);
     }
 
-    // Given a finished render, the worker hands back its texture pixels with it (the UI thread no
-    // longer converts a 10 MP window on every slider step); a failed render has none
+    /// The vectorscope reads sRGB colours: an sRGB render's own image, never a display profile's
+    /// device values (those renders bring a vectorscope measured before the conversion)
+    #[test]
+    fn the_vectorscope_is_read_only_off_srgb_pixels() {
+        let image = lightcraft_raster::Rgba8::from_fn(8, 6, |x, y| [(x * 30) as u8, (y * 40) as u8, 90, 255]);
+        let result = |display| RenderResult {
+            request_id: 1,
+            source_key: None,
+            photo: PhotoId(1),
+            level: lightcraft_engine::SourceLevel::Preview,
+            key: 1,
+            rendered: Ok(lightcraft_engine::pipeline::Rendered { image: image.clone(), histogram: Histogram::of_srgb8(&image), deep: None }),
+            gpu_fallback: None,
+            loaded: None,
+            quick: None,
+            display,
+            vectorscope: None,
+        };
+        let srgb = scope_of_srgb(&result(None)).expect("an sRGB render is measured");
+        assert_eq!(srgb.total, 48);
+        assert_eq!(*srgb, lightcraft_raster::Vectorscope::of_srgb8(&image, VECTORSCOPE_SAMPLES));
+        assert!(scope_of_srgb(&result(Some(7))).is_none(), "display device values are not read as sRGB");
+        let failed = RenderResult { rendered: Err("no".into()), ..result(None) };
+        assert!(scope_of_srgb(&failed).is_none());
+    }
+
+    /// Given a finished render, the worker hands back its texture pixels with it (the UI thread no
+    /// longer converts a 10 MP window on every slider step); a failed render has none
     #[test]
     fn the_worker_converts_the_texture_pixels() {
         let image = lightcraft_raster::Rgba8::from_fn(5, 3, |x, y| [(x * 40) as u8, (y * 80) as u8, 7, 255]);
@@ -1990,6 +2030,7 @@ mod color_image_tests {
             loaded: None,
             quick: None,
             display: None,
+            vectorscope: None,
         };
         let histogram = Histogram::of_srgb8(&image);
         let ok = Renderer::run_for(|| result(Ok(lightcraft_pipeline::Rendered { image: image.clone(), histogram, deep: None })), &None);

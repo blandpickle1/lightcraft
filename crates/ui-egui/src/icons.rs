@@ -184,6 +184,7 @@ pub fn paint_turned(p: &Painter, rect: Rect, icon: Icon, color: Color32, radians
     paint_with(p, rect, icon, color, Some((radians.cos(), radians.sin())));
 }
 
+/// Draw `icon` into `rect` in `color`, optionally turned (`turn`: cosine and sine of the angle).
 fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<(f32, f32)>) {
     let side = rect.width().min(rect.height());
     // All disclosure and navigation chevrons share a 16-point size and stroke.

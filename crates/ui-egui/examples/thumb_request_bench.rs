@@ -92,6 +92,7 @@ fn frames() -> usize {
     std::env::var("FRAMES").ok().and_then(|s| s.parse().ok()).unwrap_or(300).max(1)
 }
 
+/// Time the thumbnail requests of a grid of `points` (with requests still `pending` or not).
 fn micro(points: usize, pending: bool) {
     let frames = frames();
     let n = 200;

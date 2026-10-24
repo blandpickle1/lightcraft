@@ -72,10 +72,12 @@ impl Vectorscope {
 mod tests {
     use super::*;
 
+    /// A small picture of one colour.
     fn flat(rgb: [u8; 3]) -> Rgba8 {
         Rgba8::from_fn(20, 10, |_, _| [rgb[0], rgb[1], rgb[2], 255])
     }
 
+    /// Greys land in the centre cell and primaries in their own directions.
     #[test]
     fn greys_sit_in_the_middle_and_colours_around_it() {
         let mid = VECTORSCOPE_N / 2;
@@ -99,6 +101,7 @@ mod tests {
         assert!(gx < mid - 20 && gy > mid + 20, "green {gx},{gy}");
     }
 
+    /// Photographed skin, light to dark, falls within 10° of the skin tone line.
     #[test]
     fn skin_sits_near_the_skin_tone_line() {
         // skin as photographed, light to dark
@@ -109,6 +112,7 @@ mod tests {
         }
     }
 
+    /// BT.709 primaries sit at the angles a broadcast vectorscope shows.
     #[test]
     fn primaries_sit_where_a_broadcast_scope_puts_them() {
         let deg = |rgb: [f32; 3]| {
@@ -123,6 +127,7 @@ mod tests {
         }
     }
 
+    /// Large pictures are sampled to the budget; empty, transparent and tiny input is safe.
     #[test]
     fn large_pictures_are_sampled_and_odd_input_is_safe() {
         let big = Rgba8::from_fn(1000, 800, |x, y| [(x % 256) as u8, (y % 256) as u8, 100, 255]);

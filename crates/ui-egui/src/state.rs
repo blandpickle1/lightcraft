@@ -1359,6 +1359,7 @@ impl SyncCounts {
 }
 
 impl Default for UiState {
+    /// The UI as a new install starts it.
     fn default() -> Self {
         UiState {
             window: None,

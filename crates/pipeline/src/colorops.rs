@@ -87,9 +87,14 @@ fn hue_push(deg: f64) -> [f32; 3] {
 }
 
 /// A primary wheel per channel: luminance × `lum_k` on all three, plus its hue's push × saturation × `col_k`.
+/// Luminance and saturation are held to their slider ranges (−100..100, 0..100): settings from a
+/// preset, a sidecar or a merge aren't clamped on the way in, and an absurd value would make the
+/// gamma exponent overflow to infinity (non-finite pixels; the GPU's `pow` is undefined there).
 fn primary(w: &lightcraft_develop::Wheel, lum_k: f32, col_k: f32) -> [f32; 3] {
-    let push = if w.sat != 0.0 { hue_push(w.hue) } else { [0.0; 3] };
-    let (lum, sat) = ((w.lum / 100.0) as f32 * lum_k, (w.sat / 100.0) as f32 * col_k);
+    let finite = |v: f64, lo: f64, hi: f64| if v.is_finite() { v.clamp(lo, hi) } else { 0.0 };
+    let (lum, sat) = (finite(w.lum, -100.0, 100.0), finite(w.sat, 0.0, 100.0));
+    let push = if sat != 0.0 { hue_push(if w.hue.is_finite() { w.hue } else { 0.0 }) } else { [0.0; 3] };
+    let (lum, sat) = ((lum / 100.0) as f32 * lum_k, (sat / 100.0) as f32 * col_k);
     push.map(|p| lum + sat * p)
 }
 
@@ -233,6 +238,7 @@ fn wheel(w: &lightcraft_develop::Wheel) -> WheelK {
 }
 
 impl ColorOps {
+    /// Resolve the colour settings of `s` once for the per-pixel stage.
     pub fn new(s: &DevelopSettings) -> ColorOps {
         let bands = s.mixer.bands();
         let g = &s.grading;
@@ -261,6 +267,7 @@ impl ColorOps {
         }
     }
 
+    /// Nothing to do: every colour adjustment, grading wheel included, is neutral.
     pub fn is_identity(&self) -> bool {
         self.vibrance == 0.0
             && self.saturation == 0.0
@@ -536,16 +543,19 @@ mod tests {
         assert!(o[2] - h0 > 0.1, "{o:?}");
     }
 
+    /// A wheel at `hue` / `sat` / `lum`.
     fn wheel(hue: f64, sat: f64, lum: f64) -> lightcraft_develop::Wheel {
         lightcraft_develop::Wheel { hue, sat, lum }
     }
 
+    /// Colour ops for default settings with the grading changed by `f`.
     fn graded(f: impl Fn(&mut lightcraft_develop::ColorGrading)) -> ColorOps {
         let mut s = DevelopSettings::default();
         f(&mut s.grading);
         ColorOps::new(&s)
     }
 
+    /// Neutral primary wheels (a hue alone included) leave colours untouched.
     #[test]
     fn neutral_primaries_change_nothing() {
         let ops = graded(|g| g.lift.hue = 120.0);
@@ -558,6 +568,7 @@ mod tests {
         }
     }
 
+    /// Each primary wheel moves the end of the range it should, keeps the other, and stays monotonic.
     #[test]
     fn lift_gain_gamma_offset_move_the_ends_they_should() {
         let y = |o: [f32; 3]| o[1];
@@ -587,6 +598,7 @@ mod tests {
         }
     }
 
+    /// A wheel's hue tints towards that colour, and the push has no luminance bias.
     #[test]
     fn a_wheel_hue_pushes_its_colour() {
         // a warm (orange) gain tints white warm, a teal lift tints black teal and leaves white
@@ -607,6 +619,7 @@ mod tests {
         assert_eq!(Primaries::new(&lightcraft_develop::ColorGrading::default()), None);
     }
 
+    /// The primaries combine with the 3-way wheels and keep odd input finite and non-negative.
     #[test]
     fn primaries_run_after_the_three_way_wheels_and_survive_odd_input() {
         let both = graded(|g| {
@@ -619,6 +632,32 @@ mod tests {
             let o = both.apply(c, 0.0, 0.0);
             assert!(o.iter().all(|v| v.is_finite() && *v >= 0.0), "{c:?} → {o:?}");
         }
+    }
+
+    /// Out-of-range wheel values that skipped the sliders are clamped: the result stays finite.
+    #[test]
+    fn out_of_range_wheels_from_presets_or_sidecars_stay_finite() {
+        // settings that skipped the sliders' clamp (a preset, a sidecar, develop.merge)
+        for w in [wheel(0.0, 0.0, -1e28), wheel(0.0, 0.0, 1e28), wheel(f64::NAN, 1e9, f64::INFINITY), wheel(f64::INFINITY, -50.0, f64::NAN)] {
+            for set in [0, 1, 2, 3] {
+                let ops = graded(|g| match set {
+                    0 => g.lift = w,
+                    1 => g.gamma = w,
+                    2 => g.gain = w,
+                    _ => g.offset = w,
+                });
+                let Some(p) = ops.primaries else { continue };
+                assert!(p.words().iter().all(|v| v.is_finite()), "{w:?} → {:?}", p.words());
+                for v in [0.0f32, 0.18, 1.0] {
+                    let o = ops.apply([v; 3], 0.0, 0.0);
+                    assert!(o.iter().all(|x| x.is_finite()), "{w:?} on {v}: {o:?}");
+                }
+            }
+        }
+        // a clamped extreme matches the slider's own end
+        let far = graded(|g| g.gamma = wheel(0.0, 0.0, -1e28)).primaries.unwrap();
+        let end = graded(|g| g.gamma = wheel(0.0, 0.0, -100.0)).primaries.unwrap();
+        assert_eq!(far, end);
     }
 
     #[test]

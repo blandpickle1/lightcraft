@@ -74,6 +74,7 @@ fn rel_to_k(r: f64) -> f64 {
     1e6 / (1e6 / 6500.0 - r * 0.8)
 }
 
+/// The Edit panel for photo `id`: histogram, vectorscope, header and the develop sections.
 pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     let t = Tokens::get(ui.ctx());
     let d = app.session.develop_of(id).unwrap_or_default();
@@ -545,6 +546,7 @@ pub fn sub_title(ui: &mut egui::Ui, title: &str) {
     ui.painter().text(pos2(r.left() + 24.0, r.center().y + 4.0), Align2::LEFT_CENTER, crate::i18n::tr(title), t.semibold(13.0), t.text_label);
 }
 
+/// A foldable Edit section: its header row (title, eye, reset) and, when open, `body`.
 fn section(
     app: &mut LightcraftApp,
     ui: &mut egui::Ui,
@@ -639,15 +641,16 @@ fn vectorscope(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     // the picture
     let scope = app.renderer.textures.get(&Slot::Main).filter(|tx| tx.photo == id).and_then(|tx| tx.vectorscope.clone());
     if let Some(s) = &scope {
-        // one texture, rebuilt when a new render brings a new scope
+        // one texture, rebuilt when a new render brings a new scope: the scope it was made from is
+        // kept with it and compared by identity (an address alone could be reused once freed)
         let key = egui::Id::new("vectorscopeTex");
-        let stamp = std::sync::Arc::as_ptr(s) as usize;
-        let held = ui.ctx().data(|d| d.get_temp::<(usize, egui::TextureHandle)>(key));
+        type Held = (std::sync::Arc<lightcraft_raster::Vectorscope>, egui::TextureHandle);
+        let held = ui.ctx().data(|d| d.get_temp::<Held>(key));
         let tex = match held {
-            Some((at, tex)) if at == stamp => tex,
+            Some((at, tex)) if std::sync::Arc::ptr_eq(&at, s) => tex,
             _ => {
                 let tex = ui.ctx().load_texture("vectorscope", vectorscope_image(s), egui::TextureOptions::LINEAR);
-                ui.ctx().data_mut(|d| d.insert_temp(key, (stamp, tex.clone())));
+                ui.ctx().data_mut(|d| d.insert_temp::<Held>(key, (s.clone(), tex.clone())));
                 tex
             }
         };
@@ -1567,6 +1570,7 @@ const GRADING_WHEELS: [(&str, &str); 3] = [("shadows", "Shadows"), ("midtones", 
 /// The primary wheels (video grading), in panel order: key and label.
 const PRIMARY_WHEELS: [(&str, &str); 4] = [("lift", "Lift"), ("gamma", "Gamma"), ("gain", "Gain"), ("offset", "Offset")];
 
+/// The Color Grading flyout: its tabs, then the 3-way wheels, one range wheel, or the Lift / Gamma / Gain / Offset wheels.
 fn grading(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, photo: PhotoId) {
     let mode = GRADING_TABS.iter().find(|(k, ..)| *k == app.ui.grading_mode).map_or("3way", |(k, ..)| *k);
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 6, bottom: 2 }).show(ui, |ui| {
@@ -1586,12 +1590,14 @@ fn grading(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, phot
         // Lift / Gamma / Gain on top as in a grading panel, Offset below; each wheel's
         // luminance is its master slider underneath
         let rad = 34.0;
-        let (area, _) = ui.allocate_exact_size(vec2(w, 196.0), Sense::hover());
+        // room for each wheel's hover readout above it and its label below: Offset's readout
+        // clears the row's labels and its own label stays inside the area
+        let (area, _) = ui.allocate_exact_size(vec2(w, 224.0), Sense::hover());
         let at = [
             pos2(area.left() + w * 0.2, area.top() + 56.0),
             pos2(area.center().x, area.top() + 56.0),
             pos2(area.left() + w * 0.8, area.top() + 56.0),
-            pos2(area.center().x, area.top() + 150.0),
+            pos2(area.center().x, area.top() + 168.0),
         ];
         for ((key, label), c) in PRIMARY_WHEELS.into_iter().zip(at) {
             let wh = match key {

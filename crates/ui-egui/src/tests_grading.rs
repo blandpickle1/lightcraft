@@ -376,6 +376,7 @@ fn wheel_rim_is_fully_saturated_and_the_centre_neutral() {
     assert!(hi - lo <= 40 && lo >= 100, "centre is not a neutral grey: {p:?}");
 }
 
+/// The Lift / Gamma / Gain / Offset tab shows its four wheels and sliders, and a drag sets one wheel in one undo step.
 #[test]
 fn the_primaries_tab_shows_lift_gamma_gain_offset_and_a_drag_sets_a_wheel() {
     let mut h = demo();
@@ -406,6 +407,7 @@ fn the_primaries_tab_shows_lift_gamma_gain_offset_and_a_drag_sets_a_wheel() {
     assert!(widget(&h, "wheelEye:gain").is_none());
 }
 
+/// View ▸ Vectorscope shows the loupe's scope under the histogram and hides it again.
 #[test]
 fn view_vectorscope_shows_the_loupes_colours_under_the_histogram() {
     let mut h = demo();

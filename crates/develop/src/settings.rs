@@ -487,6 +487,7 @@ pub struct BwMix {
 }
 
 impl BwMix {
+    /// The eight band values, red to magenta (`MIXER_BANDS` order).
     pub fn bands(&self) -> [f64; 8] {
         [self.red, self.orange, self.yellow, self.green, self.aqua, self.blue, self.purple, self.magenta]
     }
@@ -542,6 +543,7 @@ pub struct ColorGrading {
 }
 
 impl Default for ColorGrading {
+    /// Neutral wheels, Blending 50, Balance 0.
     fn default() -> Self {
         Self {
             shadows: Wheel::default(),

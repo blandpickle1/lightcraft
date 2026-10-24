@@ -914,6 +914,7 @@ mod tests {
         println!("CHILD: survived");
     }
 
+    /// Workgroup counts stay under the 65535-per-axis limit for very large images.
     #[test]
     fn dispatches_stay_within_the_workgroup_limit() {
         // 1-D kernels over a 100 MP image and 2-D ones over 16k × 16k stay under 65535 per axis
