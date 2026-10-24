@@ -66,12 +66,17 @@ pub enum Slot {
     HdrHistogram,
 }
 
+/// Pixels the loupe's vectorscope reads at most (evenly spread): plenty for a 128-cell grid.
+pub const VECTORSCOPE_SAMPLES: usize = 250_000;
+
 pub struct Tex {
     pub key: u64,
     pub photo: PhotoId,
     pub tex: egui::TextureHandle,
     pub size: [usize; 2],
     pub histogram: Option<Histogram>,
+    /// The loupe's colours on the chroma plane (`Slot::Main` only; the Vectorscope panel).
+    pub vectorscope: Option<std::sync::Arc<lightcraft_raster::Vectorscope>>,
     pub ms: f64,
     /// Set for stand-ins: where the image came from.
     pub quick: Option<QuickSource>,
@@ -906,6 +911,8 @@ impl Renderer {
                 self.textures.remove(&Slot::ThumbQuick(id));
             }
             let img = &rendered.image;
+            // the loupe's vectorscope: sampled (a few ms), so it follows a drag
+            let vectorscope = (slot == Slot::Main).then(|| Arc::new(lightcraft_raster::Vectorscope::of_srgb8(img, VECTORSCOPE_SAMPLES)));
             let color = color.unwrap_or_else(|| Arc::new(color_image(img)));
             let pixels = self.keep_pixels.then(|| color.clone());
             let name = format!("{slot:?}");
@@ -917,6 +924,7 @@ impl Renderer {
                     t.photo = r.photo;
                     t.size = [img.width, img.height];
                     t.histogram = Some(rendered.histogram);
+                    t.vectorscope = vectorscope;
                     t.ms = ms;
                     t.quick = r.quick;
                 }
@@ -930,6 +938,7 @@ impl Renderer {
                             tex,
                             size: [img.width, img.height],
                             histogram: Some(rendered.histogram),
+                            vectorscope,
                             ms,
                             quick: r.quick,
                             pixels,
@@ -1847,7 +1856,10 @@ mod stage_budget_tests {
         let ctx = egui::Context::default();
         let mut r = Renderer::default();
         let tex = ctx.load_texture("window", egui::ColorImage::new([1, 1], vec![egui::Color32::BLACK]), Default::default());
-        r.textures.insert(Slot::Region, Tex { key: 1, photo: PhotoId(1), tex, size: [1, 1], histogram: None, ms: 0.0, quick: None, pixels: None });
+        r.textures.insert(
+            Slot::Region,
+            Tex { key: 1, photo: PhotoId(1), tex, size: [1, 1], histogram: None, vectorscope: None, ms: 0.0, quick: None, pixels: None },
+        );
         let long_ago = std::time::Instant::now().checked_sub(IDLE_TRIM * 2).unwrap();
         r.idle = Some((long_ago, false));
         r.trim_when_idle(&ctx);

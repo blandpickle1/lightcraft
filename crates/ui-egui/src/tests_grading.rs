@@ -405,3 +405,24 @@ fn the_primaries_tab_shows_lift_gamma_gain_offset_and_a_drag_sets_a_wheel() {
     h.step();
     assert!(widget(&h, "wheelEye:gain").is_none());
 }
+
+#[test]
+fn view_vectorscope_shows_the_loupes_colours_under_the_histogram() {
+    let mut h = demo();
+    assert!(!h.app.ui.vectorscope && widget(&h, "vectorscope").is_none(), "off by default");
+    let r = h.request("engine.execute", json!({"command": "view.vectorscope"}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.settle(SETTLE);
+    assert!(h.app.ui.vectorscope);
+    let scope_rect = widget(&h, "vectorscope").expect("the panel");
+    let hist = widget(&h, "histogram").expect("the histogram stays");
+    assert!(scope_rect.top() >= hist.bottom() - 1.0, "under the histogram");
+    let scope = h.app.renderer.textures.get(&crate::render::Slot::Main).and_then(|t| t.vectorscope.clone()).expect("the loupe render brings one");
+    assert!(scope.total > 1000, "{}", scope.total);
+    // and View ▸ Vectorscope again hides it
+    let r = h.request("engine.execute", json!({"command": "view.vectorscope", "params": {"show": false}}), T);
+    assert_eq!(r["ok"], true, "{r}");
+    h.step();
+    h.step();
+    assert!(widget(&h, "vectorscope").is_none());
+}

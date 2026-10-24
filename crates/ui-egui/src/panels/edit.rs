@@ -99,6 +99,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     if app.ui.histogram {
         histogram(app, ui, id);
     }
+    if app.ui.vectorscope {
+        vectorscope(app, ui, id);
+    }
     if app.ui.soft_proof {
         soft_proofing(app, ui, id);
     }
@@ -576,6 +579,102 @@ fn section(
         body(app, ui, d);
     }
     divider(ui);
+}
+
+// ------------------------------------------------------------------------------ vectorscope
+
+/// BT.709 R'G'B' (0..1, clamped) of luma `y` and chroma `(cb, cr)`: the inverse of
+/// [`lightcraft_raster::Vectorscope::cbcr`].
+fn ycbcr_rgb(y: f32, cb: f32, cr: f32) -> [f32; 3] {
+    [y + 1.5748 * cr, y - 0.187_324 * cb - 0.468_124 * cr, y + 1.8556 * cb].map(|v| v.clamp(0.0, 1.0))
+}
+
+/// The scope's picture: each cell lit by how many pixels fall in it (square root, so faint
+/// colours still show), in the colour it stands for.
+fn vectorscope_image(s: &lightcraft_raster::Vectorscope) -> egui::ColorImage {
+    let n = s.n.max(1);
+    let peak = s.peak().max(1) as f32;
+    let n1 = n.saturating_sub(1).max(1) as f32;
+    let pixels = (0..n * n)
+        .map(|i| {
+            let count = s.bins.get(i).copied().unwrap_or(0);
+            if count == 0 {
+                return Color32::TRANSPARENT;
+            }
+            let (cx, cy) = ((i % n) as f32, (i / n) as f32);
+            let (cb, cr) = (cx / n1 - 0.5, 0.5 - cy / n1);
+            let k = (count as f32 / peak).sqrt().clamp(0.15, 1.0);
+            let [r, g, b] = ycbcr_rgb(0.65, cb, cr).map(|v| (v * 255.0) as u8);
+            Color32::from_rgba_unmultiplied(r, g, b, (k * 255.0) as u8)
+        })
+        .collect();
+    egui::ColorImage { size: [n, n], pixels, source_size: vec2(n as f32, n as f32) }
+}
+
+/// The Vectorscope panel: the loupe's colours on the chroma plane, with the 75 % colour targets
+/// (R, Yl, G, Cy, B, Mg) and the skin tone line. Hue is the angle, saturation the distance from
+/// the centre.
+fn vectorscope(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
+    let t = Tokens::get(ui.ctx());
+    let w = ui.available_width();
+    let side = (w - 40.0).clamp(80.0, 220.0);
+    let (r, resp) = ui.allocate_exact_size(vec2(w, side + 24.0), Sense::hover());
+    crate::widgets::announce(&resp, crate::i18n::tr("Vectorscope"));
+    register(ui.ctx(), "vectorscope", r);
+    let p = ui.painter();
+    p.rect_filled(r, 0.0, t.button);
+    let c = pos2(r.center().x, r.top() + 12.0 + side / 2.0);
+    let rad = side / 2.0;
+    // graticule: the edge of the chroma plane, faint rings at 25 / 50 / 75 %, the axes
+    let grid = Color32::from_white_alpha(28);
+    p.circle_filled(c, rad, Color32::from_black_alpha(90));
+    for f in [0.25, 0.5, 0.75, 1.0] {
+        p.circle_stroke(c, rad * f, Stroke::new(1.0, grid));
+    }
+    p.line_segment([c - vec2(rad, 0.0), c + vec2(rad, 0.0)], Stroke::new(1.0, grid));
+    p.line_segment([c - vec2(0.0, rad), c + vec2(0.0, rad)], Stroke::new(1.0, grid));
+    // the skin tone line
+    let a = lightcraft_raster::scope::SKIN_TONE_DEGREES.to_radians();
+    p.line_segment([c, c + vec2(a.cos(), -a.sin()) * rad], Stroke::new(1.0, Color32::from_rgba_unmultiplied(230, 180, 140, 140)));
+    // the picture
+    let scope = app.renderer.textures.get(&Slot::Main).filter(|tx| tx.photo == id).and_then(|tx| tx.vectorscope.clone());
+    if let Some(s) = &scope {
+        // one texture, rebuilt when a new render brings a new scope
+        let key = egui::Id::new("vectorscopeTex");
+        let stamp = std::sync::Arc::as_ptr(s) as usize;
+        let held = ui.ctx().data(|d| d.get_temp::<(usize, egui::TextureHandle)>(key));
+        let tex = match held {
+            Some((at, tex)) if at == stamp => tex,
+            _ => {
+                let tex = ui.ctx().load_texture("vectorscope", vectorscope_image(s), egui::TextureOptions::LINEAR);
+                ui.ctx().data_mut(|d| d.insert_temp(key, (stamp, tex.clone())));
+                tex
+            }
+        };
+        let img = Rect::from_center_size(c, vec2(side, side));
+        p.image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    // the 75 % colour targets
+    for (rgb, label) in [
+        ([0.75, 0.0, 0.0], "R"),
+        ([0.75, 0.75, 0.0], "Yl"),
+        ([0.0, 0.75, 0.0], "G"),
+        ([0.0, 0.75, 0.75], "Cy"),
+        ([0.0, 0.0, 0.75], "B"),
+        ([0.75, 0.0, 0.75], "Mg"),
+    ] {
+        let (cb, cr) = lightcraft_raster::Vectorscope::cbcr(rgb);
+        let at = c + vec2(cb, -cr) * (side / 1.0);
+        p.rect_stroke(Rect::from_center_size(at, vec2(8.0, 8.0)), 0.0, Stroke::new(1.0, Color32::from_white_alpha(110)), egui::StrokeKind::Middle);
+        let out = (at - c).normalized() * 11.0;
+        p.text(at + out, Align2::CENTER_CENTER, label, t.font(9.5), t.text_label);
+    }
+    if scope.is_none() {
+        p.text(c, Align2::CENTER_CENTER, crate::i18n::tr("No preview yet"), t.font(11.0), t.text_label);
+    }
+    ui.interact(r, egui::Id::new("vectorscopeHelp"), Sense::hover()).on_hover_text(crate::i18n::tr(
+        "Where the photo's colours sit: the angle is the hue, the distance from the centre the saturation. Boxes mark 75 % red, yellow, green, cyan, blue and magenta; the line marks skin tones.",
+    ));
 }
 
 // ------------------------------------------------------------------------------ histogram
