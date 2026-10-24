@@ -4,6 +4,9 @@ description: Save a photo's colour and tone edits as a .cube LUT to use the same
 order: 46
 ---
 
+<!-- Draft until Export Look as LUT ships: then drop the leading _ from the file name, list it in
+guides/index.md, link it from its What's New entry, and set `verified` to that release. -->
+
 Edit a photo until you like its look, then choose **File** > **Export Look as LUT…** and save the `.cube` file. Load that file as a LUT in your video or photo editor to give other footage the same colour and tone.
 
 ## Steps
@@ -37,7 +40,8 @@ These settings depend on where a pixel is or what surrounds it, so a LUT can't h
 - **Vignette** and **Grain**
 - Masks, spot removal and red eye
 - Crop, rotation, transform and lens corrections
-- HDR
+- **Denoise**
+- HDR, and a raw photo's own local tone mapping
 
 To get a look that travels well, make it mostly with the settings in the first list.
 
@@ -47,6 +51,6 @@ Choose **File** > **Import Profiles & Presets…** and pick the `.cube` file. It
 
 ## Things to know
 
-- The LUT takes and gives sRGB colours as a screen shows them (the usual "Rec.709 / sRGB" footage). Use it on footage or images in that colour space, after any camera log conversion.
+- The LUT takes and gives sRGB-encoded colours. Use it on sRGB-encoded footage or images, after any camera log conversion. Video in Rec.709 uses a different curve: convert it to sRGB encoding before the LUT, or the result will be a little off.
 - The file has 33 steps per colour channel, the usual size for looks. It matches LightCraft's own render closely; very saturated colours at the edge of what a screen shows can differ slightly.
 - Your photo is not changed by exporting its look.
