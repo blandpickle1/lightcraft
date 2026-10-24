@@ -9,4 +9,5 @@ order: 20
 - [Edit a photo](edit-a-photo.md)
 - [Remove distractions from a photo](remove-distractions.md)
 - [Export photos](export-photos.md)
+- [Export a look as a LUT](export-look-as-lut.md)
 - [Move over from Lightroom](import-lightroom-catalog.md)
