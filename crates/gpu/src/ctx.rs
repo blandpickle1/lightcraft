@@ -920,4 +920,19 @@ mod tests {
         assert!(super::groups1(100_000_000 * 3).iter().all(|g| *g <= 65535));
         assert!(super::groups2(16384, 16384, [16, 16]).iter().all(|g| *g <= 65535));
     }
+
+    /// Every compute module parses and validates as WGSL on any machine, GPU or not (naga, the
+    /// compiler wgpu runs): a shader typo fails here instead of only where a GPU is.
+    #[test]
+    fn every_shader_module_validates_without_a_gpu() {
+        use wgpu::naga;
+        let consts = super::constants();
+        for m in super::MODULES {
+            let src = super::module_source(m, &consts);
+            let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::default())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&src)));
+        }
+    }
 }

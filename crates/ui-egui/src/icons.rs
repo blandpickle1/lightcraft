@@ -94,6 +94,8 @@ pub enum Icon {
     Pause,
     /// Colour grading, all three wheels: three small circles.
     GradeAll,
+    /// Colour grading, Lift / Gamma / Gain / Offset: four small circles in a square.
+    GradePrimaries,
     /// Colour grading, shadows wheel: a filled circle.
     GradeShadows,
     /// Colour grading, midtones wheel: a half-filled circle.
@@ -293,6 +295,11 @@ fn paint_with(p: &Painter, rect: Rect, icon: Icon, color: Color32, turn: Option<
             pen.circle(10.0, 6.0, 3.2);
             pen.circle(5.5, 13.5, 3.2);
             pen.circle(14.5, 13.5, 3.2);
+        }
+        GradePrimaries => {
+            for (x, y) in [(6.0, 6.0), (14.0, 6.0), (6.0, 14.0), (14.0, 14.0)] {
+                pen.circle(x, y, 3.0);
+            }
         }
         GradeShadows => {
             pen.circle(10.0, 10.0, 6.0);

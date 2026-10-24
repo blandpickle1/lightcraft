@@ -1454,8 +1454,9 @@ fn hdr_row(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings) {
 // ------------------------------------------------------------------------------ colour grading
 
 /// The colour grading tabs: key, tooltip, icon.
-const GRADING_TABS: [(&str, &str, Icon); 4] = [
+const GRADING_TABS: [(&str, &str, Icon); 5] = [
     ("3way", "3-Way", Icon::GradeAll),
+    ("primaries", "Lift / Gamma / Gain / Offset", Icon::GradePrimaries),
     ("shadows", "Shadows", Icon::GradeShadows),
     ("midtones", "Midtones", Icon::GradeMidtones),
     ("highlights", "Highlights", Icon::GradeHighlights),
@@ -1463,6 +1464,9 @@ const GRADING_TABS: [(&str, &str, Icon); 4] = [
 
 /// The wheels, in the order of `UiState::grading_hidden`.
 const GRADING_WHEELS: [(&str, &str); 3] = [("shadows", "Shadows"), ("midtones", "Midtones"), ("highlights", "Highlights")];
+
+/// The primary wheels (video grading), in panel order: key and label.
+const PRIMARY_WHEELS: [(&str, &str); 4] = [("lift", "Lift"), ("gamma", "Gamma"), ("gain", "Gain"), ("offset", "Offset")];
 
 fn grading(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, photo: PhotoId) {
     let mode = GRADING_TABS.iter().find(|(k, ..)| *k == app.ui.grading_mode).map_or("3way", |(k, ..)| *k);
@@ -1479,6 +1483,31 @@ fn grading(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, phot
         });
     });
     let w = ui.available_width();
+    if mode == "primaries" {
+        // Lift / Gamma / Gain on top as in a grading panel, Offset below; each wheel's
+        // luminance is its master slider underneath
+        let rad = 34.0;
+        let (area, _) = ui.allocate_exact_size(vec2(w, 196.0), Sense::hover());
+        let at = [
+            pos2(area.left() + w * 0.2, area.top() + 56.0),
+            pos2(area.center().x, area.top() + 56.0),
+            pos2(area.left() + w * 0.8, area.top() + 56.0),
+            pos2(area.center().x, area.top() + 150.0),
+        ];
+        for ((key, label), c) in PRIMARY_WHEELS.into_iter().zip(at) {
+            let wh = match key {
+                "lift" => d.grading.lift,
+                "gamma" => d.grading.gamma,
+                "gain" => d.grading.gain,
+                _ => d.grading.offset,
+            };
+            wheel_control(app, ui, key, label, wh, None, c, rad, true);
+        }
+        for (key, _) in PRIMARY_WHEELS {
+            control(app, ui, d, &format!("grading.{key}.lum"), true);
+        }
+        return;
+    }
     if mode == "3way" {
         // three wheels of one size: midtones on top, shadows and highlights below
         let rad = 40.0;
@@ -1514,14 +1543,32 @@ fn grading(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, phot
 /// hovered (3-Way); otherwise the wheel is the large one and gets saturation guide rings.
 #[allow(clippy::too_many_arguments)]
 fn grading_wheel(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, photo: PhotoId, i: usize, c: Pos2, rad: f32, readout: bool) {
-    let t = Tokens::get(ui.ctx());
     let Some(&(key, label)) = GRADING_WHEELS.get(i) else { return };
     let wh = match key {
         "shadows" => d.grading.shadows,
         "midtones" => d.grading.midtones,
         _ => d.grading.highlights,
     };
-    let hidden = app.ui.grading_hidden_for(photo).get(i).copied().unwrap_or(false);
+    wheel_control(app, ui, key, label, wh, Some((photo, i)), c, rad, readout);
+}
+
+/// A grading wheel for the `grading.{key}.hue` / `.sat` controls showing `wh`, centred on `c`.
+/// `eye`: the photo and index into `UiState::grading_hidden` for the show / hide eye (3-way
+/// wheels); `None` draws no eye.
+#[allow(clippy::too_many_arguments)]
+fn wheel_control(
+    app: &mut LightcraftApp,
+    ui: &mut egui::Ui,
+    key: &str,
+    label: &str,
+    wh: lightcraft_develop::Wheel,
+    eye: Option<(PhotoId, usize)>,
+    c: Pos2,
+    rad: f32,
+    readout: bool,
+) {
+    let t = Tokens::get(ui.ctx());
+    let hidden = eye.is_some_and(|(photo, i)| app.ui.grading_hidden_for(photo).get(i).copied().unwrap_or(false));
     let r = Rect::from_center_size(c, vec2(rad * 2.0, rad * 2.0));
     // the corners (eye, readout) count as the wheel for hovering
     let zone = r.expand(10.0);
@@ -1614,7 +1661,9 @@ fn grading_wheel(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings
         );
     }
     // the eye: on top of the wheel, shown while hovering or while the wheel is hidden
-    if hovering || hidden {
+    if let Some((photo, i)) = eye
+        && (hovering || hidden)
+    {
         let eye = Rect::from_center_size(r.left_bottom() + vec2(2.0, -2.0), vec2(16.0, 16.0));
         let er = ui.interact(eye, egui::Id::new(("wheelEye", key)), Sense::click());
         crate::widgets::announce(&er, crate::i18n::tr("Show / hide"));
