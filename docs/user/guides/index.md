@@ -9,4 +9,5 @@ order: 20
 - [Edit a photo](edit-a-photo.md)
 - [Remove distractions from a photo](remove-distractions.md)
 - [Export photos](export-photos.md)
+- [Choose how exports are resized](resize-exports.md)
 - [Move over from Lightroom](import-lightroom-catalog.md)
