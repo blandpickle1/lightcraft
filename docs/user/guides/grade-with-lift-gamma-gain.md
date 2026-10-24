@@ -30,6 +30,6 @@ For example, a teal **Lift** and an orange **Gain** give the "teal and orange" l
 
 - Hold `Shift` while dragging to keep the hue and change only how strong it is. Hold `Cmd` (`Ctrl` on Windows and Linux) to keep the strength and change only the hue. Hold `Alt` (`Option` on a Mac) to move the dot a tenth as far, for fine changes.
 - These wheels work on top of the **3-Way** wheels (shadows, midtones and highlights), so you can use both.
-- The wheels act on the whole photo. To grade part of it, use a mask.
+- The wheels act on the whole photo.
 - To see where the photo's colours sit while you grade, open **View** > **Vectorscope** (see [Read the vectorscope](read-the-vectorscope.md)).
 - Presets that include **Color Grading** keep these wheels too.
