@@ -93,7 +93,8 @@ fn hue_push(deg: f64) -> [f32; 3] {
 fn primary(w: &lightcraft_develop::Wheel, lum_k: f32, col_k: f32) -> [f32; 3] {
     let finite = |v: f64, lo: f64, hi: f64| if v.is_finite() { v.clamp(lo, hi) } else { 0.0 };
     let (lum, sat) = (finite(w.lum, -100.0, 100.0), finite(w.sat, 0.0, 100.0));
-    let push = if sat != 0.0 { hue_push(if w.hue.is_finite() { w.hue } else { 0.0 }) } else { [0.0; 3] };
+    // wrapped into 0..360 first: a huge finite hue would become infinite as an f32 and lose its push
+    let push = if sat != 0.0 { hue_push(if w.hue.is_finite() { w.hue.rem_euclid(360.0) } else { 0.0 }) } else { [0.0; 3] };
     let (lum, sat) = ((lum / 100.0) as f32 * lum_k, (sat / 100.0) as f32 * col_k);
     push.map(|p| lum + sat * p)
 }
@@ -654,6 +655,11 @@ mod tests {
                 }
             }
         }
+        // a huge finite hue keeps its push: wrapped into 0..360, not lost as an infinite f32
+        let huge = graded(|g| g.gain = wheel(360.0 * 1e40 + 30.0, 60.0, 0.0)).primaries.unwrap();
+        assert!(huge.gain.iter().any(|v| v.abs() > 0.05), "push kept: {:?}", huge.gain);
+        let wrapped = graded(|g| g.gain = wheel((360.0 * 1e40 + 30.0f64).rem_euclid(360.0), 60.0, 0.0)).primaries.unwrap();
+        assert_eq!(huge, wrapped);
         // a clamped extreme matches the slider's own end
         let far = graded(|g| g.gamma = wheel(0.0, 0.0, -1e28)).primaries.unwrap();
         let end = graded(|g| g.gamma = wheel(0.0, 0.0, -100.0)).primaries.unwrap();

@@ -443,11 +443,12 @@ impl Renderer {
     }
 
     /// Run `job` and make its image ready for `display` (on the worker thread).
-    fn run_for(job: impl FnOnce() -> RenderResult, display: &Option<Arc<lightcraft_engine::display::Display>>) -> Finished {
+    /// `slot`: the view it is for; only the loupe (`Slot::Main`) keeps a vectorscope.
+    fn run_for(slot: Slot, job: impl FnOnce() -> RenderResult, display: &Option<Arc<lightcraft_engine::display::Display>>) -> Finished {
         let mut r = job();
         if let Some(d) = display {
-            // the vectorscope reads the sRGB colours, before they become the display's
-            if r.vectorscope.is_none() {
+            // the loupe's vectorscope reads the sRGB colours, before they become the display's
+            if slot == Slot::Main && r.vectorscope.is_none() {
                 r.vectorscope = scope_of_srgb(&r);
             }
             lightcraft_engine::display::present(&mut r, d);
@@ -521,7 +522,7 @@ impl Renderer {
             priority,
             Box::new(move || {
                 let run = || if background { lightcraft_engine::memory::in_background(|| job.run()) } else { job.run() };
-                Self::run_for(run, &display)
+                Self::run_for(slot, run, &display)
             }),
         );
     }
@@ -558,7 +559,7 @@ impl Renderer {
         self.requests.insert(slot, Requested { id: job.request_id, source });
         let key = job.key;
         let display = self.display.clone();
-        self.pool.submit(slot, key, priority, Box::new(move || Self::run_for(|| job.run(), &display)));
+        self.pool.submit(slot, key, priority, Box::new(move || Self::run_for(slot, || job.run(), &display)));
     }
 
     /// Render a slideshow title screen into `slot` (once per screen key, like [`Self::request`]):
@@ -576,7 +577,7 @@ impl Renderer {
         let request_id = lightcraft_preview::next_tick();
         self.requests.insert(slot, Requested { id: request_id, source: None });
         let display = self.display.clone();
-        self.pool.submit(slot, key, priority, Box::new(move || Self::run_for(|| compose.result(request_id), &display)));
+        self.pool.submit(slot, key, priority, Box::new(move || Self::run_for(slot, || compose.result(request_id), &display)));
     }
 
     /// Prepare a photo in the background (a [`Slot::Prefetch`] job runs once per key; a newer one
@@ -873,7 +874,7 @@ impl Renderer {
             // (results from an offload, which doesn't know the display profile: converted here)
             if let Some(d) = &self.display {
                 let before = r.display;
-                if r.vectorscope.is_none() {
+                if slot == Slot::Main && r.vectorscope.is_none() {
                     r.vectorscope = scope_of_srgb(&r);
                 }
                 lightcraft_engine::display::present(&mut r, d);
@@ -2033,9 +2034,13 @@ mod color_image_tests {
             vectorscope: None,
         };
         let histogram = Histogram::of_srgb8(&image);
-        let ok = Renderer::run_for(|| result(Ok(lightcraft_pipeline::Rendered { image: image.clone(), histogram, deep: None })), &None);
+        let ok = Renderer::run_for(
+            Slot::Thumb(PhotoId(1)),
+            || result(Ok(lightcraft_pipeline::Rendered { image: image.clone(), histogram, deep: None })),
+            &None,
+        );
         assert_eq!(ok.color.map(|c| c.pixels.clone()), Some(color_image(&image).pixels));
-        let failed = Renderer::run_for(|| result(Err("unreadable".into())), &None);
+        let failed = Renderer::run_for(Slot::Thumb(PhotoId(1)), || result(Err("unreadable".into())), &None);
         assert!(failed.color.is_none());
     }
 
