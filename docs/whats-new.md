@@ -8,7 +8,6 @@
   **B-Spline**, **Gaussian**, **Bilinear**, **Box (Area Average)** and **Nearest Neighbor**. A named filter renders
   the photo at full size and resizes the finished picture with it: sharper enlargements and reductions, or hard
   pixel edges for pixel art. **Resample in linear light** (on by default) keeps fine detail at its brightness.
-  See [Choose how exports are resized](user/guides/resize-exports.md).
 
 ## 2026-10-21
 

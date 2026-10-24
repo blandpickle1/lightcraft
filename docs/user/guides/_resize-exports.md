@@ -4,6 +4,11 @@ description: Pick a resampling filter such as Lanczos, Mitchell or Nearest Neigh
 order: 45
 ---
 
+<!-- Draft until export resampling ships: then drop the leading _ from the file name, list it in
+guides/index.md, link it from step 5 of export-photos.md ("**Resampling** picks how the photo is
+resized: see [Choose how exports are resized](resize-exports.md)."), link it from its What's New
+entry, and set `verified` to that release. -->
+
 When you export at a smaller or larger size, open **File** > **Export…**, clear **Full size**, and pick a filter under **Resampling**. **Automatic** is the fastest; a named filter such as **Lanczos 3** gives you control over how sharp the result looks.
 
 ## Steps
